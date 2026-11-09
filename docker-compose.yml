@@ -1,0 +1,79 @@
+# Déploiement serveur : Postgres + migrations + application + Caddy (HTTPS automatique).
+#
+#   cp .env.production.example .env.production   # puis remplir les valeurs
+#   docker compose --env-file .env.production up -d --build
+#
+# Données de démo (optionnel, efface les données !) :
+#   docker compose --env-file .env.production run --rm -e ALLOW_SEED=1 migrate npx tsx src/db/seed.ts
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-nextia}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Définir POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-nextia}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Applique les migrations puis s'arrête ; l'appli ne démarre qu'après.
+  migrate:
+    build:
+      context: .
+      target: tools
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-nextia}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-nextia}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  app:
+    build:
+      context: .
+      target: runner
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-nextia}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-nextia}
+      AUTH_SECRET: ${AUTH_SECRET:?Définir AUTH_SECRET (32 caractères min.)}
+      APP_URL: https://${DOMAIN:?Définir DOMAIN}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      COMPANY_NAME: ${COMPANY_NAME:-Nextia}
+      COMPANY_ADDRESS: ${COMPANY_ADDRESS:-}
+      COMPANY_SIRET: ${COMPANY_SIRET:-}
+      COMPANY_VAT: ${COMPANY_VAT:-}
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    expose:
+      - "3000"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:
